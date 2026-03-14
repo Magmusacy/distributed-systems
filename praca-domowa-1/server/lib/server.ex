@@ -6,7 +6,7 @@ defmodule Server do
     tcp_manager_pid = spawn(fn -> tcp_manager_loop([]) end)
 
     {:ok, socket} =
-      :gen_tcp.listen(port, [:binary, packet: :line, active: false, reuseaddr: true])
+      :gen_tcp.listen(port, [:binary, packet: 4, active: false, reuseaddr: true])
 
     Logger.info("Serwer nasłuchuje na połączenia TCP na porcie: #{port}")
     loop_acceptor(socket, tcp_manager_pid, 0)
@@ -17,9 +17,7 @@ defmodule Server do
     worker_pid = spawn(fn -> serve_tcp_client(client, tcp_manager_pid, client_id) end)
     :ok = :gen_tcp.controlling_process(client, worker_pid)
 
-    Logger.info(
-      "Klient z ID: #{client_id} został uruchomiony na procesie z PID: #{inspect(worker_pid)}"
-    )
+    Logger.info("Klient z ID: #{client_id} został uruchomiony")
 
     loop_acceptor(socket, tcp_manager_pid, client_id + 1)
   end
@@ -32,12 +30,9 @@ defmodule Server do
 
   defp worker_loop(socket, manager_pid, client_id) do
     receive do
-      {:tcp, socket, data} ->
+      {:tcp, ^socket, data} ->
         message = "Klient z ID: #{client_id} wysłał wiadomość: #{data}"
         send(manager_pid, {:broadcast, self(), message})
-
-        Logger.info("Klient z ID: #{client_id} wysłał wiadomość TCP BROADCAST")
-
         worker_loop(socket, manager_pid, client_id)
 
       {:broadcast, msg} ->
