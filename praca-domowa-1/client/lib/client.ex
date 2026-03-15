@@ -1,4 +1,6 @@
 defmodule Client do
+  require Logger
+
   @multicast_group {239, 0, 0, 1}
   @multicast_port 6767
 
@@ -9,6 +11,7 @@ defmodule Client do
     # Give this client a name
     :gen_tcp.send(tcp_socket, name)
     {:ok, {_, tcp_port}} = :inet.sockname(tcp_socket)
+
     # Per client UDP socket
     {:ok, udp_socket} = :gen_udp.open(tcp_port, [:binary, active: true])
     :ok = :gen_udp.connect(udp_socket, 'localhost', port)
@@ -24,19 +27,34 @@ defmodule Client do
         multicast_loop: true
       ])
 
-    receiver_pid =
-      spawn(fn -> receiver_loop(tcp_socket, udp_socket, multicast_udp_socket, self()) end)
+    receiver_state = %{
+      tcp_socket: tcp_socket,
+      udp_socket: udp_socket,
+      multicast_udp_socket: multicast_udp_socket,
+      sender_pid: self()
+    }
+
+    receiver_pid = spawn(fn -> receiver_loop(receiver_state) end)
 
     :gen_tcp.controlling_process(tcp_socket, receiver_pid)
     :gen_udp.controlling_process(udp_socket, receiver_pid)
     :gen_udp.controlling_process(multicast_udp_socket, receiver_pid)
-    sender_loop(tcp_socket, udp_socket, receiver_pid, :tcp)
+
+    sender_state = %{
+      tcp_socket: tcp_socket,
+      udp_socket: udp_socket,
+      receiver_pid: receiver_pid,
+      mode: :tcp
+    }
+
+    IO.puts("Wysyłaj wiadomości na jednym z trzech kanałów (t/u/m)")
+    sender_loop(sender_state)
   end
 
-  defp sender_loop(tcp_socket, udp_socket, receiver_pid, mode) do
+  defp sender_loop(state) do
     input = IO.gets("Wiadomość: ")
 
-    mode =
+    new_mode =
       cond do
         String.trim(input) == "u" ->
           IO.write("Przełączono na tryb UDP")
@@ -53,8 +71,8 @@ defmodule Client do
         # Testing purposes
         String.trim(input) == "art" ->
           send(
-            receiver_pid,
-            {:send, mode,
+            state.receiver_pid,
+            {:send, state.mode,
              """
 
                /\\_/\\
@@ -63,29 +81,36 @@ defmodule Client do
              """}
           )
 
-          mode
+          state.mode
 
         true ->
-          send(receiver_pid, {:send, mode, input})
-          mode
+          send(state.receiver_pid, {:send, state.mode, input})
+          state.mode
       end
 
-    sender_loop(tcp_socket, udp_socket, receiver_pid, mode)
+    sender_loop(%{state | mode: new_mode})
   end
 
-  defp receiver_loop(tcp_socket, udp_socket, multicast_udp_socket, sender_pid) do
+  defp receiver_loop(state) do
+    %{
+      tcp_socket: tcp_socket,
+      udp_socket: udp_socket,
+      multicast_udp_socket: multicast_udp_socket,
+      sender_pid: sender_pid
+    } = state
+
     receive do
       {:tcp, ^tcp_socket, data} ->
         IO.write("[Server (TCP)] #{data}")
-        receiver_loop(tcp_socket, udp_socket, multicast_udp_socket, sender_pid)
+        receiver_loop(state)
 
-      {:udp, ^udp_socket, host, port, data} ->
+      {:udp, ^udp_socket, _host, _port, data} ->
         IO.write("[Server (UDP)] #{data}")
-        receiver_loop(tcp_socket, udp_socket, multicast_udp_socket, sender_pid)
+        receiver_loop(state)
 
-      {:udp, ^multicast_udp_socket, host, port, data} ->
+      {:udp, ^multicast_udp_socket, _host, _port, data} ->
         IO.write("[MULTICAST] #{data}")
-        receiver_loop(tcp_socket, udp_socket, multicast_udp_socket, sender_pid)
+        receiver_loop(state)
 
       {:send, mode, input} ->
         case mode do
@@ -99,7 +124,7 @@ defmodule Client do
             :gen_udp.send(multicast_udp_socket, @multicast_group, @multicast_port, input)
         end
 
-        receiver_loop(tcp_socket, udp_socket, multicast_udp_socket, sender_pid)
+        receiver_loop(state)
 
       {:tcp_closed, ^tcp_socket} ->
         Process.exit(sender_pid, :kill)
